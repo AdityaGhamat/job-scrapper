@@ -1,0 +1,26 @@
+
+# Core data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# HTML parsing
+lxml>=4.9.0
+html5lib>=1.1
+beautifulsoup4>=4.12.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Scrapling - replaces Selenium (handles Cloudflare + datacenter IP blocks)
+# This is the key change for GitHub Actions compatibility
+scrapling[fetchers]>=0.4.0
+playwright>=1.40.0
+
+# Excel output
+openpyxl>=3.1.2
+
+# Scheduling support (optional)
+schedule>=1.2.0
+
+# For NSE API
+urllib3>=2.0.0
