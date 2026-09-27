@@ -35,15 +35,19 @@ GREENHOUSE_BOARDS = [
 ]
 
 WORKDAY_COMPANIES = [
-    # format: {label, domain, company, site}
-    {"label": "Netflix", "domain": "netflix.wd1.myworkdayjobs.com", "company": "netflix", "site": "Netflix"},
-{"label": "Salesforce", "domain": "salesforce.wd12.myworkdayjobs.com", "company": "salesforce", "site": "External_Career_Site"},
-    {"label": "Walmart", "domain": "walmart.wd1.myworkdayjobs.com", "company": "walmart", "site": "WalmartExternal"},
-    {"label": "Workday", "domain": "workday.wd1.myworkdayjobs.com", "company": "workday", "site": "Workday"},
-    {"label": "Adobe", "domain": "adobe.wd5.myworkdayjobs.com", "company": "adobe", "site": "External"},
-    {"label": "Amazon", "domain": "amazon.wd5.myworkdayjobs.com", "company": "amazon", "site": "Amazon"},
-]
+    # WORKING - 40 jobs on Actions ✅ you already saw
+    {"label": "【entity-Salesforce¦canonical_name=salesforce】", "domain": "【entity-salesforce¦canonical_name=salesforce】.wd12.myworkdayjobs.com", "company": "【entity-salesforce¦canonical_name=salesforce】", "site": "External_Career_Site"},
 
+    # VERIFIED FIXES - change wd1 → wd5 and fix site
+    {"label": "【entity-Walmart¦canonical_name=walmart】", "domain": "【entity-walmart¦canonical_name=walmart】.wd5.myworkdayjobs.com", "company": "【entity-walmart¦canonical_name=walmart】", "site": "WalmartExternal"},
+    {"label": "【entity-Adobe¦canonical_name=adobe】", "domain": "【entity-adobe¦canonical_name=【entity-adobe¦canonical_name=adobe】】.wd5.myworkdayjobs.com", "company": "【entity-adobe¦canonical_name=adobe】", "site": "external_experienced"},
+    {"label": "【entity-Nvidia¦canonical_name=nvidia】", "domain": "【entity-nvidia¦canonical_name=nvidia】.wd5.myworkdayjobs.com", "company": "nvidia", "site": "NVIDIAExternalCareerSite"},
+    {"label": "Disney", "domain": "disney.wd5.myworkdayjobs.com", "company": "disney", "site": "disneycareer"},
+    {"label": "Workday", "domain": "workday.wd5.myworkdayjobs.com", "company": "workday", "site": "Workday"},
+
+    # REMOVE these - dead on Workday
+    # {"label": "Netflix",...} -> migrated to jobs.【entity-netflix¦canonical_name=Netflix】.com, always 422
+]
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json",
