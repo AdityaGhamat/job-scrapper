@@ -1,0 +1,32 @@
+name: Job Scraper - Greenhouse + Workday
+
+on:
+  workflow_dispatch: {} # <-- Manual Run button
+  schedule:
+    - cron: "30 3 * * 1-5" # 9 AM IST Mon-Fri
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          scrapling install
+          playwright install chromium
+          pip install patchright
+          patchright install chromium
+          playwright install-deps chromium
+      - name: Run scraper
+        run: python job_scraper.py
+      - name: Upload Excel
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobs-${{ github.run_id }}
+          path: |
+            Daily_Jobs.xlsx
+            daily_jobs.csv
