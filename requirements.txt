@@ -24,3 +24,5 @@ schedule>=1.2.0
 
 # For NSE API
 urllib3>=2.0.0
+
+httpx
