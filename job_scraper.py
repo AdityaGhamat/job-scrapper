@@ -10,7 +10,7 @@
 =============================================================================
 """
 
-import os, sys, time, json, random, logging, datetime, re
+import os, sys, time, json, random, logging, datetime, re, uuid
 import pandas as pd
 import requests
 
@@ -154,6 +154,171 @@ def scrape_workday(cfg):
     log.info(f"[Workday:{label}] {len(all_jobs)} jobs")
     return all_jobs
 
+# --- API INGESTION ---
+# Delivery pipeline: deduplicated jobs -> batched HTTP POST -> ingestion API -> MongoDB.
+# The scraping functions above are untouched; everything below only handles delivery.
+
+INGEST_BATCH_SIZE_DEFAULT = 500
+INGEST_MAX_RETRIES_DEFAULT = 5
+INGEST_MAX_DELAY_SECONDS = 30
+INGEST_REQUEST_TIMEOUT_SECONDS = 60
+
+# Temporary failures worth retrying with backoff.
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+class IngestError(Exception):
+    """A batch permanently failed to ingest (retries exhausted or fatal status)."""
+
+
+class IngestConfigError(IngestError):
+    """Ingestion is enabled but misconfigured (missing URL/key, invalid settings)."""
+
+
+def ingestion_enabled():
+    return os.environ.get("ENABLE_INGEST", "false").strip().lower() in ("1", "true", "yes")
+
+
+def _env_int(name, default, minimum=1):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise IngestConfigError(f"{name} must be an integer, got {raw!r}")
+    if value < minimum:
+        raise IngestConfigError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
+def get_ingest_config():
+    """Return (api_url, api_key, batch_size, max_retries) or raise IngestConfigError."""
+    api_url = os.environ.get("INGEST_API_URL", "").strip()
+    api_key = os.environ.get("INGEST_API_KEY", "")
+    if not api_url:
+        raise IngestConfigError("ENABLE_INGEST=true but INGEST_API_URL is missing")
+    if not api_key:
+        raise IngestConfigError("ENABLE_INGEST=true but INGEST_API_KEY is missing")
+    batch_size = _env_int("INGEST_BATCH_SIZE", INGEST_BATCH_SIZE_DEFAULT)
+    max_retries = _env_int("INGEST_MAX_RETRIES", INGEST_MAX_RETRIES_DEFAULT)
+    return api_url, api_key, batch_size, max_retries
+
+
+def generate_run_id():
+    github_run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+    if github_run_id:
+        return f"gha-{github_run_id}"
+    return f"local-{uuid.uuid4()}"
+
+
+def chunk_jobs(jobs, batch_size):
+    """Yield successive batches of at most batch_size jobs."""
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    for i in range(0, len(jobs), batch_size):
+        yield jobs[i:i + batch_size]
+
+
+def _response_snippet(resp, limit=500):
+    try:
+        text = resp.text or ""
+    except Exception:
+        text = ""
+    return text[:limit]
+
+
+def post_jobs_batch(session, api_url, api_key, run_id, jobs, batch_no=1, total_batches=1, max_retries=5):
+    """POST one batch. Retries temporary failures; returns the API response dict."""
+    payload = {"runId": run_id, "jobs": jobs}
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    last_error = "unknown error"
+    for attempt in range(1, max_retries + 1):
+        status = None
+        try:
+            resp = session.post(api_url, json=payload, headers=headers, timeout=INGEST_REQUEST_TIMEOUT_SECONDS)
+            status = resp.status_code
+        except requests.RequestException as e:
+            last_error = f"network error: {e}"
+        else:
+            if 200 <= status < 300:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    raise IngestError(f"batch {batch_no}/{total_batches} runId={run_id}: HTTP {status} with invalid JSON response")
+                log.info(f"[INGEST] batch={batch_no}/{total_batches} received={data.get('received', 0)} inserted={data.get('inserted', 0)} updated={data.get('updated', 0)}")
+                return data
+            if status not in RETRYABLE_STATUS_CODES:
+                raise IngestError(f"batch {batch_no}/{total_batches} runId={run_id}: fatal HTTP {status}: {_response_snippet(resp)}")
+            last_error = f"HTTP {status}: {_response_snippet(resp)}"
+        if attempt < max_retries:
+            delay = min(2 ** (attempt - 1), INGEST_MAX_DELAY_SECONDS) + random.uniform(0, 1)
+            log.warning(f"[INGEST] batch {batch_no}/{total_batches} attempt {attempt}/{max_retries} failed ({last_error}); retrying in {delay:.1f}s")
+            time.sleep(delay)
+    raise IngestError(f"batch {batch_no}/{total_batches} runId={run_id}: failed after {max_retries} attempts: {last_error}")
+
+
+def records_from_dataframe(df):
+    """Convert the deduplicated DataFrame back to job dicts (NaN/None -> "")."""
+    records = []
+    for record in df.to_dict(orient="records"):
+        records.append({k: ("" if pd.isna(v) else v) for k, v in record.items()})
+    return records
+
+
+def ingest_jobs(jobs):
+    """Send deduplicated jobs to the ingestion API in batches.
+
+    Returns a summary dict, or None when ingestion is disabled.
+    Raises IngestError when a batch permanently fails or config is invalid.
+    """
+    if not ingestion_enabled():
+        log.info("[INGEST] disabled (ENABLE_INGEST != true); skipping API ingestion")
+        return None
+    api_url, api_key, batch_size, max_retries = get_ingest_config()
+    run_id = generate_run_id()
+    if not jobs:
+        log.warning(f"[INGEST] runId={run_id}: no jobs to ingest")
+        return {"runId": run_id, "totalJobs": 0, "batchSize": batch_size, "batches": 0,
+                "successfulBatches": 0, "failedBatches": 0, "inserted": 0, "updated": 0, "sources": {}}
+    batches = list(chunk_jobs(jobs, batch_size))
+    log.info(f"[INGEST] Starting runId={run_id} total_jobs={len(jobs)} batches={len(batches)} batch_size={batch_size}")
+    session = requests.Session()
+    inserted_total = 0
+    updated_total = 0
+    sources_total = {}
+    for i, batch in enumerate(batches, start=1):
+        log.info(f"[INGEST] batch {i}/{len(batches)} sending {len(batch)} jobs")
+        try:
+            data = post_jobs_batch(session, api_url, api_key, run_id, batch, i, len(batches), max_retries)
+        except IngestError as e:
+            log.error(f"[INGEST] FAILED batch {i}/{len(batches)} runId={run_id}: {e}")
+            raise
+        inserted_total += int(data.get("inserted", 0) or 0)
+        updated_total += int(data.get("updated", 0) or 0)
+        for source, count in (data.get("sources") or {}).items():
+            sources_total[source] = sources_total.get(source, 0) + int(count or 0)
+    log.info(f"[INGEST] Completed runId={run_id} batches={len(batches)} inserted={inserted_total} updated={updated_total}")
+    print("==================================================")
+    print("INGESTION SUMMARY")
+    print("==================================================")
+    print(f"\nRun ID: {run_id}")
+    print(f"Total jobs: {len(jobs)}")
+    print(f"Batch size: {batch_size}")
+    print(f"Batches: {len(batches)}")
+    print(f"Successful batches: {len(batches)}")
+    print(f"Failed batches: 0")
+    print(f"\nInserted: {inserted_total}")
+    print(f"Updated: {updated_total}")
+    print("")
+    for source, count in sorted(sources_total.items()):
+        print(f"{source}: {count}")
+    print("\n==================================================")
+    return {"runId": run_id, "totalJobs": len(jobs), "batchSize": batch_size, "batches": len(batches),
+            "successfulBatches": len(batches), "failedBatches": 0,
+            "inserted": inserted_total, "updated": updated_total, "sources": sources_total}
+
+
 def run_all():
     all_jobs = []
     
@@ -196,6 +361,13 @@ def run_all():
     
     log.info(f"Saved {len(df)} jobs -> Daily_Jobs.xlsx + daily_jobs.csv | Run: {ts}")
     print(df.head(20).to_string(index=False))
+
+    # Deliver the same deduplicated jobs to the ingestion API (if enabled).
+    try:
+        ingest_jobs(records_from_dataframe(df))
+    except IngestError as e:
+        log.error(f"Ingestion failed, failing run: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     import argparse

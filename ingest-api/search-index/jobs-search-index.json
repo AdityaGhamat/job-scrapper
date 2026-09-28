@@ -1,0 +1,66 @@
+{
+  "name": "jobs_search",
+  "definition": {
+    "mappings": {
+      "dynamic": false,
+      "fields": {
+        "company": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "autocomplete",
+            "tokenization": "edgeGram",
+            "minGrams": 2,
+            "maxGrams": 15,
+            "foldDiacritics": true
+          }
+        ],
+        "title": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "autocomplete",
+            "tokenization": "edgeGram",
+            "minGrams": 2,
+            "maxGrams": 20,
+            "foldDiacritics": true
+          }
+        ],
+        "location": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "autocomplete",
+            "tokenization": "edgeGram",
+            "minGrams": 2,
+            "maxGrams": 15,
+            "foldDiacritics": true
+          }
+        ],
+        "department": [
+          {
+            "type": "string"
+          }
+        ],
+        "source": [
+          {
+            "type": "string"
+          }
+        ],
+        "updated": [
+          {
+            "type": "date"
+          }
+        ],
+        "scrapedAt": [
+          {
+            "type": "date"
+          }
+        ]
+      }
+    }
+  }
+}

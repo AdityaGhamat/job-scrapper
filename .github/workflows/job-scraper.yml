@@ -1,32 +1,115 @@
-name: Job Scraper - Greenhouse + Workday
+name: Daily Jobs - Batched Workday + Greenhouse
 
 on:
-  workflow_dispatch: {} # <-- Manual Run button
   schedule:
-    - cron: "30 3 * * 1-5" # 9 AM IST Mon-Fri
+    - cron: "30 3 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      total_shards:
+        description: "Total shards"
+        required: false
+        default: "20"
+        type: string
+      shard_filter:
+        description: "Run only one shard 0-19 for testing (leave empty for all)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: daily-jobs-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  scrape:
+  greenhouse:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install
+          cache: "pip"
+      - name: Install deps
         run: |
-          pip install -r requirements.txt
-          scrapling install
-          playwright install chromium
-          pip install patchright
-          patchright install chromium
-          playwright install-deps chromium
-      - name: Run scraper
-        run: python job_scraper.py
-      - name: Upload Excel
+          pip install pandas requests openpyxl
+          pip install scrapling || echo "scrapling optional"
+      - name: Scrape Greenhouse only
+        env:
+          ENABLE_INGEST: ${{ secrets.ENABLE_INGEST }}
+          INGEST_API_URL: ${{ secrets.INGEST_API_URL }}
+          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
+          INGEST_BATCH_SIZE: "500"
+        run: python job-scrapper.py --only-greenhouse
+
+  workday:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install deps
+        run: |
+          pip install pandas requests openpyxl
+          pip install scrapling || echo "fallback"
+
+      - name: Check shard filter
+        id: check
+        run: |
+          echo "Filter is '${{ inputs.shard_filter }}' and current shard is '${{ matrix.shard }}'"
+          if [ -z "${{ inputs.shard_filter }}" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.shard_filter }}" = "${{ matrix.shard }}" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Scrape Workday shard
+        if: steps.check.outputs.should_run == 'true'
+        env:
+          ENABLE_INGEST: ${{ secrets.ENABLE_INGEST }}
+          INGEST_API_URL: ${{ secrets.INGEST_API_URL }}
+          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
+          INGEST_BATCH_SIZE: "500"
+          INGEST_MAX_RETRIES: "5"
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          SHARD: ${{ matrix.shard }}
+          TOTAL_SHARDS: ${{ inputs.total_shards || '20' }}
+        run: |
+          echo "Running shard $SHARD / $TOTAL_SHARDS"
+          python job-scrapper.py --shard $SHARD --total-shards $TOTAL_SHARDS --only-workday
+
+      - name: Skip notice
+        if: steps.check.outputs.should_run != 'true'
+        run: echo "Skipping shard ${{ matrix.shard }} because filter is ${{ inputs.shard_filter }}"
+
+      - name: Upload logs on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: jobs-${{ github.run_id }}
+          name: workday-shard-${{ matrix.shard }}-logs
           path: |
-            Daily_Jobs.xlsx
-            daily_jobs.csv
+            *.log
+            daily_jobs_shard_*.csv
+          retention-days: 3
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [greenhouse, workday]
+    if: always()
+    steps:
+      - name: Show results
+        run: |
+          echo "Greenhouse result is ${{ needs.greenhouse.result }}"
+          echo "Workday result is ${{ needs.workday.result }}"
